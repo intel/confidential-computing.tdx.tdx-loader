@@ -71,11 +71,17 @@ $(TARGET): $(CRYPTO_OBJECTS) $(OBJECTS)
 	$(CC) $(OBJECTS) $(LDFLAGS) -L$(CRYPTO_LIB_PATH) $(CRYPTO_LIB) -o $@
 	$(CC) $(CONSTGEN_C) $(CFLAGS) $(INCLUDE_PATH) -o $(CONSTGEN_BIN)
 ifndef DO_NOT_STRIP
-ifdef RELEASE
-	strip -s $(RELEASE_TARGET)
+	strip -s $(TARGET)
 endif
-endif
-	#The padding operation must be the last change made to the binary 
+
+	# validate the the binary doesn't have relocation table without explicit addends (.rel.dyn, .rel.plt - SHT_REL type relocs)
+	$(eval sht_rel_check := $(shell readelf -S $@ | grep " \.rel\."))
+	@if [ "$(sht_rel_check)" != "" ]; then\
+		echo "\n!!!ERROR!!! - Binary contains relocation table without explicit addends!\n";\
+		false;\
+	fi
+
+	#The padding operation must be the last change made to the binary
 	$(MSG) "Padding Binary to page size granularity"
 	python $(PAD_BINARY_PY) $@
 	#Generate consts

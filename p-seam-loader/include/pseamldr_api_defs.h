@@ -64,20 +64,25 @@ typedef enum
 
 typedef uint64_t api_error_type;
 
-#define PSEAMLDR_RECOVERABLE_ERROR              0
-#define PSEAMLDR_UNRECOVERABLE_ERROR            1
+#define PSEAMLDR_RECOVERABLE_ERROR                             0
+#define PSEAMLDR_UNRECOVERABLE_ERROR                           1
 
-#define SEAMLDR_SCENARIO_LOAD                   0
-#define SEAMLDR_SCENARIO_UPDATE                 1
+#define SEAMLDR_SCENARIO_LOAD                                  0
+#define SEAMLDR_SCENARIO_UPDATE                                1
 
-#define SEAMLDR_PARAMS_MIN_MODULE_PAGES         1
+#define MIN_MODULE_PAGES                                       1
+#define MAX_MODULE_PAGES                                       0x800
 
-#define SEAMLDR_PARAMS_MAX_MODULE_PAGES_V0      496
+#define SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_IN_FIRST_HPAS_PAGE 495ULL
 
-#define SEAMLDR_PARAMS_SIZE                     _4KB
-#define SEAMLDR_PARAMS_MAX_MODULE_PAGES         SEAMLDR_PARAMS_MAX_MODULE_PAGES_V0
+// +1 for chaining to extra pages that contain module's pages HPAs, if needed.
+#define SEAMLDR_PARAMS_NUM_OF_ENTRIES_IN_PARAMS_LIST (SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_IN_FIRST_HPAS_PAGE + 1)
 
-#define SEAM_MODULE_PAGE_SIZE                   _4KB
+#define SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_PER_EXTRA_HPAS_PAGE 511ULL
+
+#define SEAMLDR_PARAMS_SIZE                                    _4KB
+
+#define SEAM_MODULE_PAGE_SIZE                                  _4KB
 
 typedef struct seamldr_params_s
 {
@@ -86,7 +91,7 @@ typedef struct seamldr_params_s
     uint64_t sigstruct_pa;
     uint8_t  reserved[104];
     uint64_t num_module_pages;
-    uint64_t mod_pages_pa_list[SEAMLDR_PARAMS_MAX_MODULE_PAGES];
+    uint64_t mod_pages_pa_list[SEAMLDR_PARAMS_NUM_OF_ENTRIES_IN_PARAMS_LIST];
 } seamldr_params_t;
 pseamldr_static_assert(sizeof(seamldr_params_t) == SEAMLDR_PARAMS_SIZE, seamldr_params_t);
 

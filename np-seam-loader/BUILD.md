@@ -220,7 +220,7 @@ Note: the binary generation contains the date of the created binary. Therefore, 
 3) Open a command prompt in the above project's folder and the Build the project, using the build date in YYYYMMDD format: 
 
 ```
-make -f ..\project.mak npseamldr release rev=20251106
+make -f ..\project.mak npseamldr release rev=20260503
 ```
 
 Add cpu=srf if the build is for SRF.    

@@ -41,8 +41,7 @@
 
 static uint64_t required_seam_module_code_region_size(seamldr_params_t* seamldr_params)
 {
-    UNUSED(seamldr_params);
-    return SEAMRR_MODULE_CODE_REGION_SIZE;
+    return ROUND_UP(seamldr_params->num_module_pages * PAGE_SIZE_IN_BYTES, _2MB);
 }
 
 static bool_t check_seam_sigstruct(seam_sigstruct_t* seam_sigstruct)
@@ -343,6 +342,104 @@ static api_error_type verify_manifest(pseamldr_data_t* pseamldr_data, seamldr_pa
     return PSEAMLDR_SUCCESS;
 }
 
+/**
+ * @brief Copies out module's pages HPAs from a given HPAs list to the local data.
+ * It's the caller's responsibility to check that module_pages_hpa_list is safely accessible (aligned and mapped).
+ *
+ * @param pseamldr_data
+ * @param local_data_mod_page_idx // Last module page that was stored in local data
+ * @param module_pages_hpa_list
+ * @param range_start
+ * @param range_end
+ */
+_STATIC_INLINE_ void copy_module_hpas_page_to_local_data(
+    pseamldr_data_t *pseamldr_data,
+    uint64_t *local_data_mod_page_idx,
+    uint64_t *current_module_pages_hpa_list,
+    uint64_t range_start,
+    uint64_t range_end,
+    uint64_t total_num_module_pages)
+{
+    /**
+     * Iterate over current_module_pages_hpa_list and copy its content to the local_data's HPAs buffer.
+     * Increment local_data_mod_page_idx in each iteration to save the relevant index (in local_data's buffer) for the next HPAs page.
+     */
+    for (uint64_t mod_page_idx = range_start;
+         ((mod_page_idx < range_end) && (*local_data_mod_page_idx < total_num_module_pages));
+         mod_page_idx++, (*local_data_mod_page_idx)++)
+    {
+        pseamldr_data->mod_pages_hpas[*local_data_mod_page_idx] = current_module_pages_hpa_list[mod_page_idx];
+    }
+}
+
+_STATIC_INLINE_ bool_t populate_local_data_with_module_pages_hpas(
+    pseamldr_data_t *pseamldr_data,
+    seamldr_params_t *seamldr_params)
+{
+    // Points to the currently iterated page (HPAs page) which contains TDX Module's pages HPAs.
+    uint64_t *current_module_hpas_list = NULL;
+
+    uint64_t next_hpas_page_pa = 0;
+
+    // Number of module's pages that are not included in SEAMLDR_PARAMS.MOD_PAGES_PA_LIST (i.e. starting from page #496).
+    uint64_t num_of_extra_hpas = seamldr_params->num_module_pages > SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_IN_FIRST_HPAS_PAGE ? // Avoid underflow
+							     seamldr_params->num_module_pages - (SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_IN_FIRST_HPAS_PAGE) :
+							     0;
+
+    // Number of required extra HPAs pages (pages that hold module's pages HPAs, starting from page #496).
+    uint64_t num_of_required_extra_hpas_pages =
+        ROUND_UP(num_of_extra_hpas, SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_PER_EXTRA_HPAS_PAGE) /
+        SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_PER_EXTRA_HPAS_PAGE;
+
+    uint64_t total_required_module_hpas_pages = num_of_required_extra_hpas_pages + 1; // +1 for the first HPAs page (SEAMLDR_PARAMS.MOD_PAGES_PA_LIST).
+
+    // Saves the last idx of module page that was stored in local_data.
+    uint64_t local_data_mod_page_idx = 0;
+
+    for (uint64_t hpas_page_idx = 0; hpas_page_idx < total_required_module_hpas_pages; hpas_page_idx++)
+    {
+        bool_t is_first_page = (hpas_page_idx == 0);
+        uint64_t entries_in_page;
+
+        if (is_first_page)
+        {
+            current_module_hpas_list = seamldr_params->mod_pages_pa_list;
+            entries_in_page = SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_IN_FIRST_HPAS_PAGE;
+        }
+        else
+        {
+            if (!shared_hpa_check_with_pwr_2_alignment((pa_t)next_hpas_page_pa, _4KB))
+            {
+                TDX_ERROR("Invalid physical address - 0x%llx of module HPAs page\n", next_hpas_page_pa);
+                return false;
+            }
+
+            current_module_hpas_list = map_pa((void *)next_hpas_page_pa, TDX_RANGE_RO);
+            entries_in_page = SEAMLDR_PARAMS_MAX_NUM_OF_MOD_PAGES_PER_EXTRA_HPAS_PAGE;
+        }
+
+        copy_module_hpas_page_to_local_data(pseamldr_data,
+                                            &local_data_mod_page_idx,
+                                            current_module_hpas_list,
+                                            0,
+                                            entries_in_page,
+                                            seamldr_params->num_module_pages);
+
+        // Advance to the next page only if this is not the last one.
+        if (hpas_page_idx + 1 < total_required_module_hpas_pages)
+        {
+            next_hpas_page_pa = current_module_hpas_list[entries_in_page];
+        }
+
+        if (!is_first_page)
+        {
+            free_la(current_module_hpas_list);
+        }
+    }
+
+    return true;
+}
+
 static api_error_type check_seamldr_params(pseamldr_data_t* pseamldr_data, seamldr_params_t* seamldr_params)
 {
     // Following checks required for SEAMLDR params:
@@ -370,24 +467,27 @@ static api_error_type check_seamldr_params(pseamldr_data_t* pseamldr_data, seaml
         return PSEAMLDR_EBADPARAM;
     }
 
-    uint64_t max_module_pages = SEAMLDR_PARAMS_MAX_MODULE_PAGES_V0;
-
-    IF_RARE ((seamldr_params->num_module_pages < SEAMLDR_PARAMS_MIN_MODULE_PAGES) ||
-             (seamldr_params->num_module_pages > max_module_pages))
+    IF_RARE ((seamldr_params->num_module_pages < MIN_MODULE_PAGES) ||
+             (seamldr_params->num_module_pages > MAX_MODULE_PAGES))
     {
         TDX_ERROR("Seamldr params num of module pages - %d, exceed min/max - %d/%d\n",
-                seamldr_params->num_module_pages, SEAMLDR_PARAMS_MIN_MODULE_PAGES, max_module_pages);
+                seamldr_params->num_module_pages, MIN_MODULE_PAGES, MAX_MODULE_PAGES);
         return PSEAMLDR_EBADPARAM;
     }
 
     lfence();
 
-    for (uint32_t i = 0; i < seamldr_params->num_module_pages; i++)
+    IF_RARE (!populate_local_data_with_module_pages_hpas(pseamldr_data, seamldr_params))
     {
-        IF_RARE (!shared_hpa_check_with_pwr_2_alignment((pa_t)seamldr_params->mod_pages_pa_list[i], _4KB))
+        return PSEAMLDR_EBADPARAM;
+    }
+
+    for (uint64_t i = 0; i < seamldr_params->num_module_pages; i++)
+    {
+        IF_RARE (!shared_hpa_check_with_pwr_2_alignment((pa_t)pseamldr_data->mod_pages_hpas[i], _4KB))
         {
-            TDX_ERROR("Invalid physical address - 0x%llx of module page %d\n",
-                    seamldr_params->mod_pages_pa_list[i], i);
+            TDX_ERROR("Invalid physical address - 0x%llx of module page %llu\n",
+                    pseamldr_data->mod_pages_hpas, i);
             return PSEAMLDR_EBADPARAM;
         }
     }
@@ -568,7 +668,7 @@ static api_error_type seam_module_load_and_verify(pseamldr_data_t* pseamldr_data
     // Copy and measure SEAM module image pages to the last 2M of the SEAM range
     for (uint64_t i = 0; i < seamldr_params->num_module_pages; i++)
     {
-        void* src_page_la = map_pa((void*)seamldr_params->mod_pages_pa_list[i], TDX_RANGE_RO);
+        void* src_page_la = map_pa((void*)pseamldr_data->mod_pages_hpas[i], TDX_RANGE_RO);
         void* dst_page_la = (void*)(code_region_start_la + (i * SEAM_MODULE_PAGE_SIZE));
 
         pseamldr_memcpy(dst_page_la, SEAM_MODULE_PAGE_SIZE, src_page_la, SEAM_MODULE_PAGE_SIZE);

@@ -205,6 +205,8 @@ typedef struct pseamldr_data_s
     debug_message_t       trace_buffer[TRACE_BUFFER_SIZE];
 #endif
 
+    uint64_t mod_pages_hpas[MAX_MODULE_PAGES];
+
 } pseamldr_data_t;
 pseamldr_static_assert(offsetof(pseamldr_data_t, canary) == PSEAMLDR_DATA_CANARY_OFFSET, pseamldr_data_t_canary);
 pseamldr_static_assert(offsetof(pseamldr_data_t, vmm_regs) == PSEAMLDR_DATA_VMM_GPRS_STATE_OFFSET, pseamldr_data_t_vmm_regs);
